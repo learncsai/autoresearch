@@ -1,0 +1,144 @@
+Autoresearch Experiment Log — March 14, 2026
+Branch: autoresearch/mar14
+Goal: minimize val_bpb (bits per byte) within a fixed 5-minute training budget
+GPU: H100 (80GB), single GPU
+Model: GPT with Muon+AdamW optimizer, Flash Attention 3, BPE tokenizer (vocab=8192)
+Eval: val_bpb on pinned validation shard (lower is better, vocab-size-independent)
+
+================================================================================
+FINAL BEST: 1.020413 (vs baseline 1.042548, -0.022, ~2.1% improvement)
+Winning config: depth=12, dim=512 (aspect_ratio=40), head_dim=128,
+                batch=2^18, matrix_lr=0.05, embedding_lr=0.8
+================================================================================
+
+--------------------------------------------------------------------------------
+EXPERIMENT RESULTS
+--------------------------------------------------------------------------------
+
+#   commit   val_bpb   mem_gb  status   description
+--- -------- --------- ------- -------- ------------------------------------------
+ 1  0fa0dd6  1.042548  44.0    KEEP     Baseline — unmodified train.py
+                                        Config: depth=8, dim=512, batch=2^19,
+                                        matrix_lr=0.04, embedding_lr=0.6
+                                        Steps: 493, MFU: 20.4%, tokens: 258.5M
+
+ 2  968be8f  1.047479  66.5    DISCARD  depth=10 (dim=640, ~80M params)
+                                        Hypothesis: more capacity > fewer tokens
+                                        Result: WORSE — model too large, MFU drops,
+                                        not enough steps to converge
+
+ 3  e24045d  1.049218  44.0    DISCARD  warmdown_ratio=0.65 (start decay at 35%)
+                                        Hypothesis: longer cooldown = better convergence
+                                        Result: WORSE — too much time at low LR
+
+ 4  6538d1a  1.048171  44.0    DISCARD  warmdown_ratio=0.35 (start decay at 65%)
+                                        Hypothesis: more time at peak LR
+                                        Result: WORSE — baseline 0.5 is already optimal
+
+ 5  d4e71a5  1.026820  43.9    KEEP     batch=2^18 (halved from 2^19)
+                                        Hypothesis: 2x more optimizer steps in fixed
+                                        budget improves convergence
+                                        Result: BIG WIN (-0.016) — key insight of
+                                        the run. grad_accum_steps drops to 1,
+                                        ~1000 steps vs 493.
+
+ 6  713ab17  1.033744  22.2    DISCARD  batch=2^17, device_batch=64
+                                        Hypothesis: 4x more steps continues trend
+                                        Result: WORSE — smaller device batch drops
+                                        MFU to 16.7%, gradient noise too high
+
+ 7  46209d1  1.025579  43.9    KEEP     matrix_lr=0.05 (up from 0.04)
+                                        Hypothesis: higher LR benefits more steps
+                                        Result: small improvement (-0.001)
+
+ 8  aacd1a8  1.027284  43.9    DISCARD  matrix_lr=0.06
+                                        Hypothesis: continue LR sweep upward
+                                        Result: WORSE — 0.05 is optimal
+
+ 9  0928593  1.026348  43.9    DISCARD  weight_decay=0.1 (down from 0.2)
+                                        Hypothesis: less regularization in 5min budget
+                                        Result: marginal/no improvement
+
+10  9fbe81d  1.023645  66.2    KEEP     depth=10 + batch=2^18 + matrix_lr=0.05
+                                        Hypothesis: larger model + 2x steps (exp2
+                                        failed because it used original batch=2^19)
+                                        Result: new best (-0.002 vs exp7)
+                                        Steps: 689, MFU: 25.7%
+
+11  bcaa156  CRASH     0.0     CRASH    depth=12, aspect_ratio=48 (dim=640)
+                                        Result: OOM at 75GB — too wide for H100
+
+11b eb52c32  1.020823  63.6    KEEP     depth=12, aspect_ratio=40 (dim=640->512)
+                                        Hypothesis: same width as baseline (dim=512)
+                                        but 50% more layers, safe VRAM
+                                        Result: new best (-0.003 vs exp10)
+                                        Steps: 794, MFU: 23.9%
+
+12  a17fd9e  1.025758  73.4    DISCARD  depth=14, aspect_ratio=36 (dim=512)
+                                        Hypothesis: continue depth sweep at fixed width
+                                        Result: WORSE — too many layers, fewer steps
+                                        (693), VRAM at 73.4GB (near limit)
+
+13  37271d0  1.020413  63.6    KEEP     embedding_lr=0.8 (up from 0.6)
+                                        Hypothesis: more VE layers (6 vs 4) benefit
+                                        from higher embedding LR
+                                        Result: marginal improvement (-0.0004)
+
+14  8d72a7e  1.020783  63.6    DISCARD  embedding_lr=1.0
+                                        Hypothesis: continue sweep upward
+                                        Result: slightly worse — 0.8 is optimal
+
+15  69c18cd  1.031192  63.7    DISCARD  head_dim=64 (8 heads vs 4 at dim=512)
+                                        Hypothesis: more diverse attention patterns
+                                        Result: MUCH WORSE — smaller head_dim
+                                        degrades RoPE effectiveness
+
+--------------------------------------------------------------------------------
+KEY INSIGHTS
+--------------------------------------------------------------------------------
+
+1. BATCH SIZE IS THE BIGGEST LEVER (+0.016 improvement)
+   Halving TOTAL_BATCH_SIZE from 2^19 to 2^18 doubled the optimizer steps
+   within the fixed 5-minute wall-clock budget (same GPU throughput, 2x updates).
+   This was the single most impactful change. Going to 2^17 with device_batch=64
+   backfired due to reduced MFU.
+
+2. DEPTH > WIDTH FOR FIXED VRAM
+   At the same parameter count, a deeper+narrower model outperforms a
+   shallower+wider one:
+     depth=8  dim=512: 1.042548 (baseline)
+     depth=10 dim=640: 1.023645
+     depth=12 dim=512: 1.020823  <- best depth/width
+     depth=14 dim=512: 1.025758  (too many layers, VRAM limit bites)
+   The optimal depth was 12 at dim=512 (~65GB VRAM).
+
+3. MORE STEPS UNLOCKS LARGER MODELS
+   depth=10 with original batch (2^19) scored 1.047479 (WORSE than baseline).
+   The same depth=10 with batch=2^18 scored 1.023645 (BETTER). The larger
+   model needed more optimizer steps to converge in the 5-minute budget.
+
+4. LR SCHEDULE IS ALREADY WELL-TUNED
+   WARMDOWN_RATIO=0.5 is optimal; both 0.35 and 0.65 were worse. Don't touch it.
+
+5. MATRIX_LR SWEET SPOT: 0.05
+   Muon optimizer LR: 0.04 (baseline) < 0.05 (optimal) < 0.06 (too high).
+
+6. EMBEDDING_LR SWEET SPOT: 0.8
+   Higher than baseline (0.6), optimal at 0.8, worse at 1.0.
+
+7. HEAD_DIM=128 IS IMPORTANT
+   Switching to head_dim=64 (more, smaller heads) caused a large regression.
+   Rotary position embeddings appear to benefit from larger head dimensions.
+
+--------------------------------------------------------------------------------
+PROGRESSION OF BEST VAL_BPB
+--------------------------------------------------------------------------------
+
+  baseline  1.042548
+  exp5      1.026820  (batch=2^18)
+  exp7      1.025579  (+ matrix_lr=0.05)
+  exp10     1.023645  (+ depth=10)
+  exp11b    1.020823  (depth=12 dim=512)
+  exp13     1.020413  (+ embedding_lr=0.8)   <- FINAL BEST
+
+  Total improvement: -0.022135 (~2.1% relative reduction in val_bpb)
