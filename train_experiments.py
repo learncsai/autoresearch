@@ -500,7 +500,11 @@ class GPT(nn.Module):
             else:
                 x = self.resid_lambdas[i] * x
 
-            ve_list = list(self.value_embeds[str(i)](idx)) if str(i) in self.value_embeds else []
+            if str(i) in self.value_embeds:
+                ve_modules = self.value_embeds[str(i)]
+                ve_list = [ve(idx) for ve in ve_modules]
+            else:
+                ve_list = []
             x = block(x, ve_list, cos_sin, self.window_sizes[i])
 
             if self.config.block_skip_from is not None and i == self.config.block_skip_from:

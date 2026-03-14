@@ -34,7 +34,8 @@ uv sync
 uv run prepare.py
 
 # 4. Manually run a single training experiment (~5 min)
-uv run train.py
+#uv run train.py
+uv run run_all.py
 ```
 
 If the above commands all work ok, your setup is working and you can go into autonomous research mode.

@@ -16,7 +16,7 @@ ORDER = [
 
 # Per-experiment wall clock limit for the whole Python process.
 # Slightly above the 5-minute training budget to allow startup/compile/eval.
-TIMEOUT_SECONDS = int(os.environ.get("EXPERIMENT_TIMEOUT_SECONDS", "480"))
+TIMEOUT_SECONDS = int(os.environ.get("EXPERIMENT_TIMEOUT_SECONDS", "600"))
 
 SCRIPT = Path(__file__).with_name("train_experiments.py")
 RESULTS_DIR = Path(__file__).with_name("experiment_logs")
